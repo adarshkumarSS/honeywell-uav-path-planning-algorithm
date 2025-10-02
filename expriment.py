@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import random
 import time
+from math import pi, cos, sin
 
 class Node:
     def __init__(self, x, y, z):
@@ -51,7 +52,7 @@ class RRT3D:
 
     def get_random_point(self):
         """Generate random points with improved goal bias and cruise altitude handling"""
-        # Add goal bias - 10% chance to return the goal position
+        # Add goal bias - 20% chance to return the goal position
         if random.random() < 0.2:
             return (self.goal.x, self.goal.y, self.goal.z)
             
@@ -62,7 +63,7 @@ class RRT3D:
             z = random.uniform(self.start.z, self.cruise_altitude)
         
         # Generate random points outside circular no-fly zones with improved retry logic
-        max_attempts = 20  # Increased from 10
+        max_attempts = 20
         for _ in range(max_attempts):
             x = random.uniform(*self.x_range)
             y = random.uniform(*self.y_range)
@@ -80,10 +81,13 @@ class RRT3D:
         return min(self.nodes, key=lambda node: np.linalg.norm([node.x - point[0], node.y - point[1], node.z - point[2]]))
 
     def is_collision_free(self, p1, p2):
-        """ Checks if the line segment between p1 and p2 collides with any building or enters a circular no-fly zone.
-            Now ensures a minimum clearance of space_factor units in all directions. """
+        """ Checks if the line segment between p1 and p2 collides with any building or enters a circular no-fly zone."""
         x1, y1, z1 = p1
         x2, y2, z2 = p2
+
+        # Check if either endpoint is inside a no-fly zone
+        if self.is_in_circle_zone(x1, y1) or self.is_in_circle_zone(x2, y2):
+            return False
 
         # Generate multiple points along the line segment for collision checking
         points = 10  # Number of points to check along the segment
@@ -99,18 +103,13 @@ class RRT3D:
                 z < self.z_range[0] or z > self.z_range[1]):
                 return False  # Out of bounds
             
-            # Check if this point is too close to any building (using space_factor as minimum distance)
+            # Check if this point is too close to any building
             for (bx, by, bz, w, d, h) in self.building_list:
-                # Calculate distance to building surface in all directions
-                dx = max(bx - x, 0, x - (bx + w))
-                dy = max(by - y, 0, y - (by + d))
-                dz = max(bz - z, 0, z - (bz + h))
-                
-                # Calculate the 3D distance to building
-                distance = np.sqrt(dx**2 + dy**2 + dz**2)
-                
-                # Check if we're too close to the building
-                if distance < self.space_factor:
+                # Check if point is inside building with clearance
+                if (bx - self.space_factor <= x <= bx + w + self.space_factor and
+                    by - self.space_factor <= y <= by + d + self.space_factor and
+                    bz - self.space_factor <= z <= bz + h + self.space_factor):
+                    
                     # Exception for overflight if enabled
                     if self.consider_overflight and z > bz + h + self.building_clearance:
                         continue  # Allow flying over buildings with sufficient clearance
@@ -141,7 +140,7 @@ class RRT3D:
         if distance > self.step_size:
             direction = direction / distance * self.step_size
         
-        # Prioritize vertical motion when appropriate (near start/goal or when changing altitude)
+        # Prioritize vertical motion when appropriate
         if ((abs(nearest.z - self.start.z) < 2.0 and distance < 3.0) or 
             (abs(nearest.z - self.goal.z) < 2.0 and distance < 3.0) or
             (abs(nearest.z - self.cruise_altitude) < 1.0 and nearest.z < self.cruise_altitude)):
@@ -296,7 +295,6 @@ class RRT3D:
             takeoff_points.append((start_x, start_y, min(z, self.cruise_altitude)))
             
         # Add transition phase - gradually move horizontally while at cruise altitude
-        # Find direction toward the main path
         if len(path) > 2:
             mid_point = path[2]  # Use a point further along the path for direction
         else:
@@ -450,7 +448,7 @@ class RRT3D:
             print(f"Selected path AROUND buildings (shorter by {over_distance - around_distance:.2f} units)")
             return optimized_around, optimized_over
 
-    def plot(self, optimal_path, alternative_path=None):
+    def plot(self, optimal_path, alternative_path=None, title="3D Drone Flight Path"):
         fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111, projection='3d')
 
@@ -532,61 +530,123 @@ class RRT3D:
         # Calculate path lengths if available
         if optimal_path:
             optimal_length = self.calculate_path_length(optimal_path)
-            title = f"3D Drone Flight Path - Optimal Length: {optimal_length:.2f} units"
+            title = f"{title} - Optimal Length: {optimal_length:.2f} units"
             if alternative_path:
                 alt_length = self.calculate_path_length(alternative_path)
                 title += f" (Alternative: {alt_length:.2f} units)"
             ax.set_title(title)
         else:
-            ax.set_title("3D Drone Flight Path Planning")
+            ax.set_title(title)
             
         ax.legend()
         plt.tight_layout()
         plt.show()
 
-# Example usage with sample environment
-if __name__ == "__main__":
-    # Define environment parameters
-    x_range = (0, 100)
-    y_range = (0, 100)
+# Function to create obstacles in all 8 quadrants
+def create_8_quadrant_obstacles():
+    """Create obstacles distributed across all 8 quadrants"""
+    buildings = []
+    circle_zones = []
+    
+    # Quadrant I (+, +)
+    buildings.extend([
+        (20, 20, 0, 10, 10, 15),   # Building 1
+        (50, 40, 0, 15, 12, 20),   # Building 2
+    ])
+    circle_zones.append((35, 35, 8))  # Circular zone
+    
+    # Quadrant II (-, +)
+    buildings.extend([
+        (-30, 25, 0, 12, 8, 18),   # Building 3
+        (-60, 50, 0, 10, 15, 12),  # Building 4
+    ])
+    circle_zones.append((-40, 40, 10))  # Circular zone
+    
+    # Quadrant III (-, -)
+    buildings.extend([
+        (-25, -30, 0, 15, 10, 16),  # Building 5
+        (-50, -60, 0, 12, 12, 14),  # Building 6
+    ])
+    circle_zones.append((-35, -45, 9))  # Circular zone
+    
+    # Quadrant IV (+, -)
+    buildings.extend([
+        (30, -25, 0, 10, 15, 17),   # Building 7
+        (60, -50, 0, 14, 10, 13),   # Building 8
+    ])
+    circle_zones.append((45, -35, 7))  # Circular zone
+    
+    return buildings, circle_zones
+
+# Function to create test scenarios for different quadrants
+def create_test_scenario(scenario_num):
+    """Create different test scenarios for path planning"""
+    scenarios = {
+        1: {  # Cross quadrant navigation
+            'start': (-80, -80, 0),
+            'goal': (80, 80, 0),
+            'title': "Cross-Quadrant Navigation (QIII to QI)"
+        },
+        2: {  # Adjacent quadrant navigation
+            'start': (-80, 80, 0),
+            'goal': (80, -80, 0),
+            'title': "Adjacent Quadrant Navigation (QII to QIV)"
+        },
+        3: {  # Same quadrant navigation
+            'start': (10, 10, 0),
+            'goal': (70, 70, 0),
+            'title': "Same Quadrant Navigation (QI)"
+        },
+        4: {  # Negative quadrant navigation
+            'start': (-10, -10, 0),
+            'goal': (-70, -70, 0),
+            'title': "Same Quadrant Navigation (QIII)"
+        },
+        5: {  # Complex multi-quadrant path
+            'start': (-90, 90, 0),
+            'goal': (90, -90, 0),
+            'title': "Complex Multi-Quadrant Path"
+        }
+    }
+    
+    return scenarios.get(scenario_num, scenarios[1])
+
+# Main function to run simulations
+def run_simulation(scenario_num=1):
+    """Run the RRT path planning simulation for a given scenario"""
+    print(f"\n{'='*60}")
+    print(f"Running Scenario {scenario_num}")
+    print(f"{'='*60}")
+    
+    # Get scenario parameters
+    scenario = create_test_scenario(scenario_num)
+    
+    # Define environment parameters for all quadrants
+    x_range = (-100, 100)
+    y_range = (-100, 100)
     z_range = (0, 30)
     
-    # Define buildings as (x, y, z, width, depth, height)
-    buildings = [
-        (20, 20, 0, 15, 15, 10),  # Building 1
-        (50, 30, 0, 20, 15, 15),  # Building 2
-        (70, 60, 0, 15, 20, 20),  # Building 3
-        (30, 70, 0, 10, 10, 8)    # Building 4
-    ]
-    
-    # Define circular no-fly zones as (x, y, radius)
-    no_fly_zones = [
-        (40, 40, 10),  # No-fly zone 1
-        (60, 20, 8)    # No-fly zone 2
-    ]
-    
-    # Define start and goal positions
-    start_pos = (10, 10, 0)
-    goal_pos = (90, 90, 0)
+    # Create obstacles distributed across all quadrants
+    buildings, no_fly_zones = create_8_quadrant_obstacles()
     
     # Create RRT3D planner
     rrt_planner = RRT3D(
-        start=start_pos,
-        goal=goal_pos,
+        start=scenario['start'],
+        goal=scenario['goal'],
         building_list=buildings,
         circle_zones=no_fly_zones,
         x_range=x_range,
         y_range=y_range,
         z_range=z_range,
-        step_size=2.0,
-        max_iter=1000,
-        space_factor=3.0,  # Increased to 2.0 to maintain 2 unit minimum distance from buildings
-        cruise_altitude=15.0,
-        takeoff_distance=5.0,
-        landing_distance=5.0,
-        vertical_step=1.0,
+        step_size=5.0,  # Increased for larger space
+        max_iter=1500,  # Increased for complex environments
+        space_factor=3.0,
+        cruise_altitude=25.0,  # Increased for taller buildings
+        takeoff_distance=8.0,
+        landing_distance=8.0,
+        vertical_step=2.0,
         consider_overflight=True,
-        building_clearance=2.0
+        building_clearance=3.0
     )
     
     # Find optimal path
@@ -594,7 +654,43 @@ if __name__ == "__main__":
     
     # Plot the result
     if optimal_path:
-        rrt_planner.plot(optimal_path, alternative_path)
-        print(f"Flight path planning successful!")
+        rrt_planner.plot(optimal_path, alternative_path, scenario['title'])
+        print(f"Flight path planning successful for {scenario['title']}!")
+        
+        # Print quadrant information
+        start_quadrant = get_quadrant(scenario['start'][0], scenario['start'][1])
+        goal_quadrant = get_quadrant(scenario['goal'][0], scenario['goal'][1])
+        print(f"Start in {start_quadrant}, Goal in {goal_quadrant}")
+        print(f"Path length: {rrt_planner.calculate_path_length(optimal_path):.2f} units")
     else:
-        print("Failed to find a valid path.")
+        print(f"Failed to find a valid path for {scenario['title']}.")
+    
+    return optimal_path is not None
+
+def get_quadrant(x, y):
+    """Determine which quadrant a point is in"""
+    if x >= 0 and y >= 0:
+        return "Quadrant I (+, +)"
+    elif x < 0 and y >= 0:
+        return "Quadrant II (-, +)"
+    elif x < 0 and y < 0:
+        return "Quadrant III (-, -)"
+    else:
+        return "Quadrant IV (+, -)"
+
+# Run all scenarios
+if __name__ == "__main__":
+    print("3D Drone Path Planning in All 8 Quadrants")
+    print("This simulation demonstrates path planning across all coordinate quadrants")
+    
+    # Run individual scenario
+    # run_simulation(1)
+    
+    # Run all scenarios
+    success_count = 0
+    for i in range(1, 6):
+        if run_simulation(i):
+            success_count += 1
+        print()  # Empty line between scenarios
+    
+    print(f"\nSummary: {success_count}/5 scenarios completed successfully")
